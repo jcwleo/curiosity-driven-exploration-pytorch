@@ -119,9 +119,7 @@ class AtariEnvironment(Environment):
             history_size=4,
             h=84,
             w=84,
-            life_done=True,
-            sticky_action=True,
-            p=0.25):
+            life_done=True):
         super(AtariEnvironment, self).__init__()
         self.daemon = True
         self.env = MaxAndSkipEnv(gym.make(env_id), is_render)
@@ -135,10 +133,6 @@ class AtariEnvironment(Environment):
         self.rall = 0
         self.recent_rlist = deque(maxlen=100)
         self.child_conn = child_conn
-
-        self.sticky_action = sticky_action
-        self.last_action = 0
-        self.p = p
 
         self.history_size = history_size
         self.history = np.zeros([history_size, h, w])
@@ -154,12 +148,6 @@ class AtariEnvironment(Environment):
 
             if 'Breakout' in self.env_id:
                 action += 1
-
-            # sticky action
-            if self.sticky_action:
-                if np.random.rand() <= self.p:
-                    action = self.last_action
-                self.last_action = action
 
             s, reward, done, info = self.env.step(action)
 
@@ -232,9 +220,6 @@ class MarioEnvironment(Process):
         self.child_conn = child_conn
 
         self.life_done = life_done
-        self.sticky_action = sticky_action
-        self.last_action = 0
-        self.p = p
 
         self.history_size = history_size
         self.history = np.zeros([history_size, h, w])
@@ -249,12 +234,6 @@ class MarioEnvironment(Process):
             action = self.child_conn.recv()
             if self.is_render:
                 self.env.render()
-
-            # sticky action
-            if self.sticky_action:
-                if np.random.rand() <= self.p:
-                    action = self.last_action
-                self.last_action = action
 
             obs, reward, done, info = self.env.step(action)
 

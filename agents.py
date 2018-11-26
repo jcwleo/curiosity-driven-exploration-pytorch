@@ -7,10 +7,10 @@ import torch.optim as optim
 
 from torch.distributions.categorical import Categorical
 
-from model import CnnActorCriticNetwork, RNDModel
+from model import CnnActorCriticNetwork, ICMModel
 
 
-class RNDAgent(object):
+class ICMAgent(object):
     def __init__(
             self,
             input_size,
@@ -25,7 +25,7 @@ class RNDAgent(object):
             epoch=3,
             batch_size=128,
             ppo_eps=0.1,
-            update_proportion=0.25,
+            eta=0.01,
             use_gae=True,
             use_cuda=False,
             use_noisy_net=False):
@@ -40,52 +40,60 @@ class RNDAgent(object):
         self.batch_size = batch_size
         self.use_gae = use_gae
         self.ent_coef = ent_coef
+        self.eta = eta
         self.ppo_eps = ppo_eps
         self.clip_grad_norm = clip_grad_norm
-        self.update_proportion = update_proportion
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
-        self.rnd = RNDModel(input_size, output_size)
-        self.optimizer = optim.Adam(list(self.model.parameters()) + list(self.rnd.predictor.parameters()),
+        self.icm = ICMModel(input_size, output_size, use_cuda)
+        self.optimizer = optim.Adam(list(self.model.parameters()) + list(self.icm.parameters()),
                                     lr=learning_rate)
-        self.rnd = self.rnd.to(self.device)
+        self.icm = self.icm.to(self.device)
 
         self.model = self.model.to(self.device)
 
     def get_action(self, state):
         state = torch.Tensor(state).to(self.device)
         state = state.float()
-        policy, value_ext, value_int = self.model(state)
+        policy, value = self.model(state)
         action_prob = F.softmax(policy, dim=-1).data.cpu().numpy()
 
         action = self.random_choice_prob_index(action_prob)
 
-        return action, value_ext.data.cpu().numpy().squeeze(), value_int.data.cpu().numpy().squeeze(), policy.detach()
+        return action, value.data.cpu().numpy().squeeze(), policy.detach()
 
     @staticmethod
     def random_choice_prob_index(p, axis=1):
         r = np.expand_dims(np.random.rand(p.shape[1 - axis]), axis=axis)
         return (p.cumsum(axis=axis) > r).argmax(axis=axis)
 
-    def compute_intrinsic_reward(self, next_obs):
-        next_obs = torch.FloatTensor(next_obs).to(self.device)
+    def compute_intrinsic_reward(self, state, next_state, action):
+        state = torch.FloatTensor(state).to(self.device)
+        next_state = torch.FloatTensor(next_state).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
 
-        target_next_feature = self.rnd.target(next_obs)
-        predict_next_feature = self.rnd.predictor(next_obs)
-        intrinsic_reward = (target_next_feature - predict_next_feature).pow(2).sum(1) / 2
+        action_onehot = torch.FloatTensor(
+            len(action), self.output_size).to(
+            self.device)
+        action_onehot.zero_()
+        action_onehot.scatter_(1, action.view(len(action), -1), 1)
+
+        real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+            [state, next_state, action_onehot])
+        intrinsic_reward = self.eta * (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
 
         return intrinsic_reward.data.cpu().numpy()
 
-    def train_model(self, s_batch, target_ext_batch, target_int_batch, y_batch, adv_batch, next_obs_batch, old_policy):
+    def train_model(self, s_batch, next_s_batch, target_batch, y_batch, adv_batch, old_policy):
         s_batch = torch.FloatTensor(s_batch).to(self.device)
-        target_ext_batch = torch.FloatTensor(target_ext_batch).to(self.device)
-        target_int_batch = torch.FloatTensor(target_int_batch).to(self.device)
+        next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
+        target_batch = torch.FloatTensor(target_batch).to(self.device)
         y_batch = torch.LongTensor(y_batch).to(self.device)
         adv_batch = torch.FloatTensor(adv_batch).to(self.device)
-        next_obs_batch = torch.FloatTensor(next_obs_batch).to(self.device)
 
         sample_range = np.arange(len(s_batch))
-        forward_mse = nn.MSELoss(reduction='none')
+        ce = nn.CrossEntropyLoss()
+        forward_mse = nn.MSELoss()
 
         with torch.no_grad():
             policy_old_list = torch.stack(old_policy).permute(1, 0, 2).contiguous().view(-1, self.output_size).to(
@@ -101,17 +109,21 @@ class RNDAgent(object):
                 sample_idx = sample_range[self.batch_size * j:self.batch_size * (j + 1)]
 
                 # --------------------------------------------------------------------------------
-                # for Curiosity-driven(Random Network Distillation)
-                predict_next_state_feature, target_next_state_feature = self.rnd(next_obs_batch[sample_idx])
+                # for Curiosity-driven
+                action_onehot = torch.FloatTensor(self.batch_size, self.output_size).to(self.device)
+                action_onehot.zero_()
+                action_onehot.scatter_(1, y_batch[sample_idx].view(-1, 1), 1)
+                real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+                    [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
 
-                forward_loss = forward_mse(predict_next_state_feature, target_next_state_feature.detach()).mean(-1)
-                # Proportion of exp used for predictor update
-                mask = torch.rand(len(forward_loss)).to(self.device)
-                mask = (mask < self.update_proportion).type(torch.FloatTensor).to(self.device)
-                forward_loss = (forward_loss * mask).sum() / torch.max(mask.sum(), torch.Tensor([1]).to(self.device))
+                inverse_loss = ce(
+                    pred_action, y_batch[sample_idx])
+
+                forward_loss = forward_mse(
+                    pred_next_state_feature, real_next_state_feature.detach())
                 # ---------------------------------------------------------------------------------
 
-                policy, value_ext, value_int = self.model(s_batch[sample_idx])
+                policy, value = self.model(s_batch[sample_idx])
                 m = Categorical(F.softmax(policy, dim=-1))
                 log_prob = m.log_prob(y_batch[sample_idx])
 
@@ -124,15 +136,13 @@ class RNDAgent(object):
                     1.0 + self.ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_ext_loss = F.mse_loss(value_ext.sum(1), target_ext_batch[sample_idx])
-                critic_int_loss = F.mse_loss(value_int.sum(1), target_int_batch[sample_idx])
-
-                critic_loss = critic_ext_loss + critic_int_loss
+                critic_loss = F.mse_loss(
+                    value.sum(1), target_batch[sample_idx])
 
                 entropy = m.entropy().mean()
 
                 self.optimizer.zero_grad()
-                loss = actor_loss + 0.5 * critic_loss - self.ent_coef * entropy + forward_loss
+                loss = (actor_loss + 0.5 * critic_loss - 0.001 * entropy) + forward_loss + inverse_loss
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
                 self.optimizer.step()

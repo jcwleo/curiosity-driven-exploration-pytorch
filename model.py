@@ -62,8 +62,8 @@ class NoisyLinear(nn.Module):
 
     def __repr__(self):
         return self.__class__.__name__ + '(' \
-            + 'in_features=' + str(self.in_features) \
-            + ', out_features=' + str(self.out_features) + ')'
+               + 'in_features=' + str(self.in_features) \
+               + ', out_features=' + str(self.out_features) + ')'
 
 
 class Flatten(nn.Module):
@@ -87,91 +87,6 @@ class CnnActorCriticNetwork(nn.Module):
                 out_channels=32,
                 kernel_size=8,
                 stride=4),
-            nn.ReLU(),
-            nn.Conv2d(
-                in_channels=32,
-                out_channels=64,
-                kernel_size=4,
-                stride=2),
-            nn.ReLU(),
-            nn.Conv2d(
-                in_channels=64,
-                out_channels=64,
-                kernel_size=4,
-                stride=1),
-            nn.ReLU(),
-            Flatten(),
-            linear(
-                2304,
-                256),
-            nn.ReLU(),
-            linear(
-                256,
-                448),
-            nn.ReLU()
-        )
-
-        self.actor = nn.Sequential(
-            linear(448, 448),
-            nn.ReLU(),
-            linear(448, output_size)
-        )
-
-        self.extra_layer = nn.Sequential(
-            linear(448, 448),
-            nn.ReLU()
-        )
-
-        self.critic_ext = linear(448, 1)
-        self.critic_int = linear(448, 1)
-
-        for p in self.modules():
-            if isinstance(p, nn.Conv2d):
-                init.orthogonal_(p.weight, np.sqrt(2))
-                p.bias.data.zero_()
-
-            if isinstance(p, nn.Linear):
-                init.orthogonal_(p.weight, np.sqrt(2))
-                p.bias.data.zero_()
-
-        init.orthogonal_(self.critic_ext.weight, 0.01)
-        self.critic_ext.bias.data.zero_()
-
-        init.orthogonal_(self.critic_int.weight, 0.01)
-        self.critic_int.bias.data.zero_()
-
-        for i in range(len(self.actor)):
-            if type(self.actor[i]) == nn.Linear:
-                init.orthogonal_(self.actor[i].weight, 0.01)
-                self.actor[i].bias.data.zero_()
-
-        for i in range(len(self.extra_layer)):
-            if type(self.extra_layer[i]) == nn.Linear:
-                init.orthogonal_(self.extra_layer[i].weight, 0.1)
-                self.extra_layer[i].bias.data.zero_()
-
-    def forward(self, state):
-        x = self.feature(state)
-        policy = self.actor(x)
-        value_ext = self.critic_ext(self.extra_layer(x) + x)
-        value_int = self.critic_int(self.extra_layer(x) + x)
-        return policy, value_ext, value_int
-
-
-class RNDModel(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(RNDModel, self).__init__()
-
-        self.input_size = input_size
-        self.output_size = output_size
-
-        feature_output = 7 * 7 * 64
-        self.predictor = nn.Sequential(
-            nn.Conv2d(
-                in_channels=1,
-                out_channels=32,
-                kernel_size=8,
-                stride=4),
             nn.LeakyReLU(),
             nn.Conv2d(
                 in_channels=32,
@@ -186,16 +101,62 @@ class RNDModel(nn.Module):
                 stride=1),
             nn.LeakyReLU(),
             Flatten(),
-            nn.Linear(feature_output, 512),
-            nn.ReLU(),
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Linear(512, 512)
+            linear(
+                7 * 7 * 64,
+                512),
+            nn.LeakyReLU()
         )
 
-        self.target = nn.Sequential(
+        self.actor = nn.Sequential(
+            linear(512, 512),
+            nn.LeakyReLU(),
+            linear(512, output_size)
+        )
+
+        self.critic = nn.Sequential(
+            linear(512, 512),
+            nn.LeakyReLU(),
+            linear(512, 1)
+        )
+
+        for p in self.modules():
+            if isinstance(p, nn.Conv2d):
+                init.orthogonal_(p.weight, np.sqrt(2))
+                p.bias.data.zero_()
+
+            if isinstance(p, nn.Linear):
+                init.orthogonal_(p.weight, np.sqrt(2))
+                p.bias.data.zero_()
+
+        for i in range(len(self.actor)):
+            if type(self.actor[i]) == nn.Linear:
+                init.orthogonal_(self.actor[i].weight, 0.01)
+                self.actor[i].bias.data.zero_()
+
+        for i in range(len(self.critic)):
+            if type(self.critic[i]) == nn.Linear:
+                init.orthogonal_(self.critic[i].weight, 0.01)
+                self.critic[i].bias.data.zero_()
+
+    def forward(self, state):
+        x = self.feature(state)
+        policy = self.actor(x)
+        value = self.critic(x)
+        return policy, value
+
+
+class ICMModel(nn.Module):
+    def __init__(self, input_size, output_size, use_cuda=True):
+        super(ICMModel, self).__init__()
+
+        self.input_size = input_size
+        self.output_size = output_size
+        self.device = torch.device('cuda' if use_cuda else 'cpu')
+
+        feature_output = 7 * 7 * 64
+        self.feature = nn.Sequential(
             nn.Conv2d(
-                in_channels=1,
+                in_channels=4,
                 out_channels=32,
                 kernel_size=8,
                 stride=4),
@@ -216,20 +177,56 @@ class RNDModel(nn.Module):
             nn.Linear(feature_output, 512)
         )
 
+        self.inverse_net = nn.Sequential(
+            nn.Linear(512 * 2, 512),
+            nn.ReLU(),
+            nn.Linear(512, output_size)
+        )
+
+        self.residual = [nn.Sequential(
+            nn.Linear(output_size + 512, 512),
+            nn.LeakyReLU(),
+            nn.Linear(512, 512),
+        ).to(self.device)] * 8
+
+        self.forward_net_1 = nn.Sequential(
+            nn.Linear(output_size + 512, 512),
+            nn.LeakyReLU()
+        )
+        self.forward_net_2 = nn.Sequential(
+            nn.Linear(output_size + 512, 512),
+        )
+
         for p in self.modules():
             if isinstance(p, nn.Conv2d):
-                init.orthogonal_(p.weight, np.sqrt(2))
+                init.kaiming_uniform_(p.weight)
                 p.bias.data.zero_()
 
             if isinstance(p, nn.Linear):
-                init.orthogonal_(p.weight, np.sqrt(2))
+                init.kaiming_uniform_(p.weight, a=1.0)
                 p.bias.data.zero_()
 
-        for param in self.target.parameters():
-            param.requires_grad = False
+    def forward(self, inputs):
+        state, next_state, action = inputs
 
-    def forward(self, next_obs):
-        target_feature = self.target(next_obs)
-        predict_feature = self.predictor(next_obs)
+        encode_state = self.feature(state)
+        encode_next_state = self.feature(next_state)
+        # get pred action
+        pred_action = torch.cat((encode_state, encode_next_state), 1)
+        pred_action = self.inverse_net(pred_action)
+        # ---------------------
 
-        return predict_feature, target_feature
+        # get pred next state
+        pred_next_state_feature_orig = torch.cat((encode_state, action), 1)
+        pred_next_state_feature_orig = self.forward_net_1(pred_next_state_feature_orig)
+
+        # residual
+        for i in range(4):
+            pred_next_state_feature = self.residual[i * 2](torch.cat((pred_next_state_feature_orig, action), 1))
+            pred_next_state_feature_orig = self.residual[i * 2 + 1](
+                torch.cat((pred_next_state_feature, action), 1)) + pred_next_state_feature_orig
+
+        pred_next_state_feature = self.forward_net_2(torch.cat((pred_next_state_feature_orig, action), 1))
+
+        real_next_state_feature = encode_next_state
+        return real_next_state_feature, pred_next_state_feature, pred_action
