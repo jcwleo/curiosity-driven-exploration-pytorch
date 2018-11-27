@@ -1,2 +1,2 @@
 #!/bin/bash
-CUDA_VISIBLE_DEVICES=0 python $1
+CUDA_VISIBLE_DEVICES=1 python $1

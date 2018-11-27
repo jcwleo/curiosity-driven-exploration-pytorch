@@ -120,7 +120,9 @@ def main():
     # normalize obs
     print('Start to initailize observation normalization parameter.....')
     next_obs = []
-    for step in range(pre_obs_norm_step):
+    steps = 0
+    while steps < pre_obs_norm_step:
+        steps += num_worker
         actions = np.random.randint(0, output_size, size=(num_worker,))
 
         for parent_conn, action in zip(parent_conns, actions):
@@ -223,12 +225,13 @@ def main():
 
         # Step 3. make target and advantage
         target, adv = make_train_data(total_int_reward,
-                                      total_done,
+                                      np.zeros_like(total_int_reward),
                                       total_values,
                                       gamma,
                                       num_step,
                                       num_worker)
 
+        adv = (adv - np.mean(adv)) / (np.std(adv) + 1e-8)
         # -----------------------------------------------
 
         # Step 5. Training!
