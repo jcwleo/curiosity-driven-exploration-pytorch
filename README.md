@@ -31,8 +31,8 @@ python eval.py
 ```
 
 ## 4. Loss/Reward Graph
-- Venture Env
-![image]()
+- Breakout Env
+![image](https://user-images.githubusercontent.com/23333028/49057720-29ee9680-f244-11e8-865a-4ccfb360ddd6.png)
 
 
 
