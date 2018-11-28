@@ -30,7 +30,7 @@ def main():
     env.close()
 
     is_load_model = False
-    is_render = True
+    is_render = False
     model_path = 'models/{}.model'.format(env_id)
     icm_path = 'models/{}.icm'.format(env_id)
 
