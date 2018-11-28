@@ -230,10 +230,8 @@ class MarioEnvironment(Process):
             env_idx,
             child_conn,
             history_size=4,
-            life_done=True,
             h=84,
-            w=84, movement=COMPLEX_MOVEMENT, sticky_action=True,
-            p=0.25):
+            w=84, movement=COMPLEX_MOVEMENT):
         super(MarioEnvironment, self).__init__()
         self.daemon = True
         self.env = BinarySpaceToDiscreteSpaceEnv(
@@ -246,8 +244,6 @@ class MarioEnvironment(Process):
         self.rall = 0
         self.recent_rlist = deque(maxlen=100)
         self.child_conn = child_conn
-
-        self.life_done = life_done
 
         self.history_size = history_size
         self.history = np.zeros([history_size, h, w])
@@ -267,15 +263,15 @@ class MarioEnvironment(Process):
 
             # when Mario loses life, changes the state to the terminal
             # state.
-            if self.life_done:
-                if self.lives > info['life'] and info['life'] > 0:
-                    force_done = True
-                    self.lives = info['life']
-                else:
-                    force_done = done
-                    self.lives = info['life']
-            else:
-                force_done = done
+            # if self.life_done:
+            #     if self.lives > info['life'] and info['life'] > 0:
+            #         force_done = True
+            #         self.lives = info['life']
+            #     else:
+            #         force_done = done
+            #         self.lives = info['life']
+            # else:
+            #     force_done = done
 
             # reward range -15 ~ 15
             log_reward = reward / 15
@@ -304,7 +300,7 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
+            self.child_conn.send([self.history[:, :, :], r, done, done, log_reward])
 
     def reset(self):
         self.last_action = 0
