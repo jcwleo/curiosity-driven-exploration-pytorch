@@ -80,8 +80,7 @@ class ICMAgent(object):
 
         real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
             [state, next_state, action_onehot])
-        intrinsic_reward = self.eta * (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
-
+        intrinsic_reward = self.eta * F.mse_loss(real_next_state_feature, pred_next_state_feature, reduction='none').mean(-1)
         return intrinsic_reward.data.cpu().numpy()
 
     def train_model(self, s_batch, next_s_batch, target_batch, y_batch, adv_batch, old_policy):
@@ -144,5 +143,5 @@ class ICMAgent(object):
                 self.optimizer.zero_grad()
                 loss = (actor_loss + 0.5 * critic_loss - 0.001 * entropy) + forward_loss + inverse_loss
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
+                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
                 self.optimizer.step()

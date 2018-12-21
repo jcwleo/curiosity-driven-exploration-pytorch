@@ -7,6 +7,7 @@ from torch.multiprocessing import Pipe
 from tensorboardX import SummaryWriter
 
 import numpy as np
+import copy
 
 
 def main():
@@ -57,7 +58,7 @@ def main():
     clip_grad_norm = float(default_config['ClipGradNorm'])
 
     reward_rms = RunningMeanStd()
-    obs_rms = RunningMeanStd(shape=(1, 1, 84, 84))
+    obs_rms = RunningMeanStd(shape=(1, 4, 84, 84))
 
     pre_obs_norm_step = int(default_config['ObsNormStep'])
     discounted_reward = RewardForwardFilter(gamma)
@@ -130,7 +131,7 @@ def main():
 
         for parent_conn in parent_conns:
             s, r, d, rd, lr = parent_conn.recv()
-            next_obs.append(s[3, :, :].reshape([1, 84, 84]))
+            next_obs.append(s[:])
 
     next_obs = np.stack(next_obs)
     obs_rms.update(next_obs)
@@ -144,7 +145,7 @@ def main():
 
         # Step 1. n-step rollout
         for _ in range(num_step):
-            actions, value, policy = agent.get_action((np.float32(states) - obs_rms.mean) / np.sqrt(obs_rms.var))
+            actions, value, policy = agent.get_action((states - obs_rms.mean) / np.sqrt(obs_rms.var))
 
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
@@ -165,10 +166,9 @@ def main():
 
             # total reward = int reward
             intrinsic_reward = agent.compute_intrinsic_reward(
-                (np.float32(states) - obs_rms.mean) / np.sqrt(obs_rms.var),
-                (np.float32(next_states - obs_rms.mean)) / np.sqrt(obs_rms.var),
+                (states - obs_rms.mean) / np.sqrt(obs_rms.var),
+                (next_states - obs_rms.mean) / np.sqrt(obs_rms.var),
                 actions)
-            intrinsic_reward = np.hstack(intrinsic_reward)
             sample_i_rall += intrinsic_reward[sample_env_idx]
 
             total_int_reward.append(intrinsic_reward)
@@ -195,7 +195,7 @@ def main():
                 sample_i_rall = 0
 
         # calculate last next value
-        _, value, _ = agent.get_action((np.float32(states) - obs_rms.mean) / np.sqrt(obs_rms.var))
+        _, value, _ = agent.get_action((states - obs_rms.mean) / np.sqrt(obs_rms.var))
         total_values.append(value)
         # --------------------------------------------------
 
@@ -204,7 +204,7 @@ def main():
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose()
         total_values = np.stack(total_values).transpose()
-        total_logging_policy = np.vstack(total_policy)
+        total_logging_policy = torch.stack(total_policy).view(-1, output_size).cpu().numpy()
 
         # Step 2. calculate intrinsic reward
         # running mean intrinsic reward
@@ -235,8 +235,8 @@ def main():
         # -----------------------------------------------
 
         # Step 5. Training!
-        agent.train_model((np.float32(total_state) - obs_rms.mean) / np.sqrt(obs_rms.var),
-                          (np.float32(total_next_state) - obs_rms.mean) / np.sqrt(obs_rms.var),
+        agent.train_model((total_state - obs_rms.mean) / np.sqrt(obs_rms.var),
+                          (total_next_state - obs_rms.mean) / np.sqrt(obs_rms.var),
                           target, total_action,
                           adv,
                           total_policy)
